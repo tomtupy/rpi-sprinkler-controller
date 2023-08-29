@@ -14,3 +14,95 @@ A good circuit for this is described here: https://forums.raspberrypi.com/viewto
 ![image](https://github.com/tomtupy/rpi-sprinkler-controller/assets/7709362/644275bf-c846-47d3-ad8e-e08f6f007e2a)
 
 The output of the circuit keeps a master relay open if the input is being pulsed. The master relay controls power to the relay board.
+
+## Operation
+### Run a zone
+Example: Run zone 14 for 1 minute
+```
+mutation {
+  runZone(zone: 14, durationMins: 1) {
+    zoneList {
+      zone
+      state
+    }
+    relayBoardEnabled
+  }
+}
+```
+
+### Reset board state
+```
+mutation {
+  reset {
+    zoneList {
+      zone
+      state
+    }
+  }
+}
+```
+
+### Disable/Enable Relay board
+These mutations control whether the failsafe keep-alive signal is generated
+```
+mutation {
+  enable {
+    zoneList {
+      zone
+      state
+    }
+    relayBoardEnabled
+  }
+}
+```
+
+```
+mutation {
+  disable {
+    zoneList {
+      zone
+      state
+    }
+    relayBoardEnabled
+  }
+}
+```
+
+### Get Status
+```
+query {
+  getStatus {
+    zoneList {
+      zone
+      state
+      requestedOnMins
+      elapsedOnSecs
+    }
+  }  
+}
+```
+response:
+```
+{
+  "data": {
+    "getStatus": {
+      "zoneList": [
+        {
+          "elapsedOnSecs": null,
+          "requestedOnMins": null,
+          "state": "OFF",
+          "zone": 1
+        },
+...
+        {
+          "elapsedOnSecs": 13,
+          "requestedOnMins": 1,
+          "state": "ON",
+          "zone": 14
+        },
+...
+      ]
+    }
+  }
+}
+```
