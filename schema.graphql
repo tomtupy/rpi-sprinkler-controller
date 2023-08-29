@@ -1,0 +1,33 @@
+schema {
+    query: Query
+    mutation: Mutation
+}
+
+type Mutation {
+    reset: StatusResult!
+    runZone(zone: Int!, durationMins: Int!): StatusResult!
+    enable: StatusResult!
+    disable: StatusResult!
+}
+
+enum ZoneState {
+    ON
+    OFF
+    UNKNOWN
+}
+
+type ZoneStatus {
+    zone: Int!
+    state: ZoneState!
+    elapsedOnSecs: Int
+    requestedOnMins: Int
+}
+
+type StatusResult {
+    zoneList: [ZoneStatus!]!
+    relayBoardEnabled: Boolean!
+}
+
+type Query {
+    getStatus: StatusResult!
+}
