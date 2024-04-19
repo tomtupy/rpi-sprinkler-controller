@@ -1,7 +1,6 @@
 from typing import Final, List
 import newrelic.agent
 import logging
-import subprocess
 import time
 from threading import Thread, Lock
 from enum import Enum
@@ -9,25 +8,21 @@ from ariadne.explorer import ExplorerGraphiQL
 from flask import Flask, request, jsonify
 from ariadne import QueryType, MutationType, load_schema_from_path, make_executable_schema, graphql_sync
 from graphql import GraphQLError
+from gpiozero import DigitalOutputDevice
 import queue
 
 MAX_ZONE_RUNTIME_MINS = 60
 logging.basicConfig()
 logging.root.setLevel(logging.NOTSET)
 logging.basicConfig(level=logging.NOTSET)
+NR_APPLICATION = newrelic.agent.application()
 
 # Synchronization
 LOOP_INSTRUCTON_PROCESSING_LOCK = Lock()
 LOOP_THREAD_INSTRUCTION_QUEUE = queue.Queue()
 LOOP_THEAD_RESPONSE_QUEUE = queue.Queue()
 
-
-
 # ---- GPIO ----
-class PinState(Enum):
-    ON = 0
-    OFF = 1
-
 class GpioLoopInstructions(Enum):
     RESET = 0
     RUN_ZONE = 1
@@ -41,24 +36,24 @@ class GpioLoopInstruction():
       self.zone = zone
       self.durationMins = durationMins
 
-PIN_ENABLE = 201
+PIN_ENABLE = DigitalOutputDevice(pin=2, active_high=True, initial_value=False)
 ZONE_TO_PIN_MAP: Final = {
-   1: 1,
-   2: 2,
-   3: 3,
-   4: 0,
-   5: 198,
-   6: 203,
-   7: 205,
-   8: 13,
-   9: 15,
-   10: 6,
-   11: 204,
-   12: 21,
-   13: 16,
-   14: 20,
-   15: 202,
-   16: 199
+   1: 22,
+   2: 5,
+   3: 6,
+   4: 13,
+   5: 19,
+   6: 26,
+   7: 18,
+   8: 23,
+   9: 24,
+   10: 25,
+   11: 8,
+   12: 7,
+   13: 12,
+   14: 16,
+   15: 20,
+   16: 21
 }
 
 # GPIO Loop Thread
@@ -67,9 +62,10 @@ class BoardNotReadyException(Exception):
 
 class GpioLoopThread(Thread):
    def __init__(self):
-      self.pin_state_map = dict.fromkeys(ZONE_TO_PIN_MAP.values(), None)
+      self.zone_pin_map = dict.fromkeys(ZONE_TO_PIN_MAP.keys(), None)
+      for zone_id in ZONE_TO_PIN_MAP.keys():
+         self.zone_pin_map[zone_id] = DigitalOutputDevice(pin=ZONE_TO_PIN_MAP[zone_id], active_high=False, initial_value=False)
       self.is_enabled = True
-      self.pin_toggle = PinState.OFF
       self.running_zone = None
       self.running_zone_requested_on_mins = None
       self.running_zone_start_time = None
@@ -80,7 +76,6 @@ class GpioLoopThread(Thread):
    def run(self):
       logging.info("GPIO Loop Started...")
       while True:
-         self.pin_toggle = PinState.OFF if self.pin_toggle == PinState.ON else PinState.ON
          # get instruction from queue
          with LOOP_INSTRUCTON_PROCESSING_LOCK:
             if (not LOOP_THREAD_INSTRUCTION_QUEUE.empty()):
@@ -88,7 +83,7 @@ class GpioLoopThread(Thread):
                   instruction = LOOP_THREAD_INSTRUCTION_QUEUE.get_nowait()
                   if (isinstance(instruction, GpioLoopInstruction)):
                      logging.info(f"Processing instruction {instruction.type}")
-                     newrelic.agent.record_custom_event('handle_instruction', {'instruction_type': str(instruction.type)})
+                     newrelic.agent.record_custom_event('handle_instruction', {'instruction_type': str(instruction.type)}, NR_APPLICATION)
 
                      # enable/disable
                      if (instruction.type is GpioLoopInstructions.ENABLE):
@@ -121,9 +116,13 @@ class GpioLoopThread(Thread):
          
          if (self.is_enabled):
             # Toggle keep alive signal for failsafe board
-            logging.debug(f"Keep-alive pin toggle: {self.pin_toggle}")
-            self.gpioSet(PIN_ENABLE, self.pin_toggle)
-            newrelic.agent.record_custom_metric('keep_alive_signal', self.pin_toggle.value)
+            pin_enable_char = "▲" if PIN_ENABLE.is_active else "▼"
+            print("\rEnable signal: {state}".format(state=pin_enable_char), end="")
+            if PIN_ENABLE.is_active is True:
+                PIN_ENABLE.off()
+            else:
+                PIN_ENABLE.on()
+            newrelic.agent.record_custom_metric('keep_alive_signal', PIN_ENABLE.value, NR_APPLICATION)
 
          # check running zone
          if (self.running_zone is not None):
@@ -134,22 +133,19 @@ class GpioLoopThread(Thread):
        
 
    def handleResetInstruction(self):
-      pin_list = list(map(lambda pin: f"{pin}={PinState.OFF.value}", self.pin_state_map.keys()))
-      logging.debug(f"gpioset 0 {' '.join(pin_list)}")
-      result = subprocess.run(f"gpioset 0 {' '.join(pin_list)}", capture_output=True, shell=True)
-      if (result.returncode == 0):
+      logging.debug(f"Attempting to turn off all zones")
+      for zone in self.zone_pin_map.values():
+          zone.off()
+      zone_statuses = [zone.is_active for zone in self.zone_pin_map.values()]
+      if (not any(zone_statuses)):
          # success
-         for pin in self.pin_state_map.keys():
-            self.pin_state_map[pin] = PinState.OFF
-            self.running_zone = None
-            self.running_zone_requested_on_mins = None
-            self.running_zone_start_time = None
-            self.running_zone_end_time = None
+         self.running_zone = None
+         self.running_zone_requested_on_mins = None
+         self.running_zone_start_time = None
+         self.running_zone_end_time = None
          return
-      # pin states unknown if gpioset failed
-      for pin in self.pin_state_map.keys():
-            self.pin_state_map[pin] = None
-      raise GraphQLError(f"gioset error! {result.stderr}")
+      # pin states unknown if off() failed
+      raise GraphQLError(f"Unable to turn off zones!")
 
    def handleZoneRunInstruction(self, instruction):
       if (isinstance(instruction.zone, int)
@@ -159,9 +155,7 @@ class GpioLoopThread(Thread):
             and instruction.durationMins <= MAX_ZONE_RUNTIME_MINS):
 
          self.handleResetInstruction()
-
-         self.gpioSet(ZONE_TO_PIN_MAP.get(instruction.zone), PinState.ON)
-         self.pin_state_map[ZONE_TO_PIN_MAP.get(instruction.zone)] = PinState.ON
+         self.zone_pin_map[instruction.zone].on()
          self.running_zone = instruction.zone
          self.running_zone_requested_on_mins = instruction.durationMins
          self.running_zone_start_time = int(time.time())
@@ -170,28 +164,20 @@ class GpioLoopThread(Thread):
       else:
          raise GraphQLError(f"Invalid zone/duration params: {instruction.zone} {instruction.durationMins}")
 
-   def gpioSet(self, pin: int, pin_state: PinState):
-      logging.debug(f"gpioset 0 {pin}={pin_state.value}")
-      result = subprocess.run(f"gpioset 0 {pin}={pin_state.value}", capture_output=True, shell=True)
-      if (result.returncode == 0):
-         return
-      raise GraphQLError(f"gioset error! {result.stderr}")
-
    def pinStateStr(self, pinState):
-      if (pinState is PinState.ON):
+      if (pinState is True):
          return "ON"
-      elif (pinState is PinState.OFF):
+      elif (pinState is False):
          return "OFF"
       elif (pinState is None):
          return "UNKNOWN"
    
    def getZoneStatusResponse(self):
       zoneList = []
-      for pinState in self.pin_state_map.items():
-         pin = pinState[0]
-         state = pinState[1]
-         zone = list(ZONE_TO_PIN_MAP.keys())[list(ZONE_TO_PIN_MAP.values()).index(pin)]
-         zoneState = self.pinStateStr(state)
+      for zonePin in self.zone_pin_map.items():
+         zone = zonePin[0]
+         pin = zonePin[1]
+         zoneState = self.pinStateStr(pin.is_active)
          zoneStatus = { "zone": zone, "state": zoneState }
          if (self.running_zone == zone):
             zoneStatus["requestedOnMins"] = self.running_zone_requested_on_mins
