@@ -36,24 +36,24 @@ class GpioLoopInstruction():
       self.zone = zone
       self.durationMins = durationMins
 
-PIN_ENABLE = DigitalOutputDevice(pin=2, active_high=True, initial_value=False)
+PIN_ENABLE = DigitalOutputDevice(pin=21, active_high=True, initial_value=False)
 ZONE_TO_PIN_MAP: Final = {
-   1: 22,
-   2: 5,
-   3: 6,
+   1: 11,
+   2: 19,
+   3: 26,
    4: 13,
-   5: 19,
-   6: 26,
-   7: 18,
-   8: 23,
-   9: 24,
-   10: 25,
-   11: 8,
-   12: 7,
-   13: 12,
-   14: 16,
-   15: 20,
-   16: 21
+   5: 27,
+   6: 12,
+   7: 8,
+   8: 22,
+   9: 6,
+   10: 7,
+   11: 16,
+   12: 9,
+   13: 20,
+   14: 5,
+   15: 10,
+   16: 25
 }
 
 # GPIO Loop Thread
@@ -156,10 +156,12 @@ class GpioLoopThread(Thread):
 
          self.handleResetInstruction()
          self.zone_pin_map[instruction.zone].on()
+         logging.debug(f"Turning on zone {instruction.zone} at pin {self.zone_pin_map[instruction.zone]}")
          self.running_zone = instruction.zone
          self.running_zone_requested_on_mins = instruction.durationMins
          self.running_zone_start_time = int(time.time())
          self.running_zone_end_time = self.running_zone_start_time + (instruction.durationMins * 60)
+         logging.info(f"Running zone {instruction.zone} for {instruction.durationMins}")
          return
       else:
          raise GraphQLError(f"Invalid zone/duration params: {instruction.zone} {instruction.durationMins}")
