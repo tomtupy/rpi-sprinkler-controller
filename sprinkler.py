@@ -56,6 +56,23 @@ ZONE_TO_PIN_MAP: Final = {
    16: 25
 }
 
+ZONE_TO_MASTER_VALVE_MAP: Final = {
+   1: 15,
+   2: 15,
+   3: 15,
+   4: 16,
+   5: 16,
+   6: 16,
+   7: 16,
+   8: 16,
+   9: 16,
+   10: 16,
+   11: 16,
+   12: 16,
+   13: 16,
+   14: 16
+}
+
 # GPIO Loop Thread
 class BoardNotReadyException(Exception):
     pass
@@ -70,6 +87,15 @@ class GpioLoopThread(Thread):
       self.running_zone_requested_on_mins = None
       self.running_zone_start_time = None
       self.running_zone_end_time = None
+      
+      self.pending_zone_on_time = None
+      self.pending_zone_to_on = None
+      self.pending_master_valve_on_time = None
+      self.pending_master_valve_to_on = None
+      
+      self.pending_zone_off_time = None
+      self.pending_zones_to_off = []
+      
       Thread.__init__(self)
 
    @newrelic.agent.background_task()
@@ -129,37 +155,103 @@ class GpioLoopThread(Thread):
             if (int(time.time()) >= self.running_zone_end_time or int(time.time()) >= self.running_zone_start_time + (MAX_ZONE_RUNTIME_MINS * 60)):
                self.handleResetInstruction()
 
+         # Check pending state changes
+         current_time = time.time()
+         if self.pending_zone_off_time is not None and current_time >= self.pending_zone_off_time:
+            for zone in self.pending_zones_to_off:
+               if zone in self.zone_pin_map:
+                  self.zone_pin_map[zone].off()
+            self.pending_zone_off_time = None
+            self.pending_zones_to_off = []
+         
+         if self.pending_zone_on_time is not None and current_time >= self.pending_zone_on_time:
+            if self.pending_zone_to_on in self.zone_pin_map:
+               self.zone_pin_map[self.pending_zone_to_on].on()
+               logging.debug(f"Turned on pending zone {self.pending_zone_to_on}")
+            self.pending_zone_on_time = None
+            self.pending_zone_to_on = None
+            
+         if self.pending_master_valve_on_time is not None and current_time >= self.pending_master_valve_on_time:
+            if self.pending_master_valve_to_on in self.zone_pin_map:
+               self.zone_pin_map[self.pending_master_valve_to_on].on()
+               logging.debug(f"Turned on pending master valve {self.pending_master_valve_to_on}")
+            self.pending_master_valve_on_time = None
+            self.pending_master_valve_to_on = None
+
          time.sleep(0.5)
        
 
    def handleResetInstruction(self):
-      logging.debug(f"Attempting to turn off all zones")
-      for zone in self.zone_pin_map.values():
-          zone.off()
-      zone_statuses = [zone.is_active for zone in self.zone_pin_map.values()]
-      if (not any(zone_statuses)):
-         # success
-         self.running_zone = None
-         self.running_zone_requested_on_mins = None
-         self.running_zone_start_time = None
-         self.running_zone_end_time = None
-         return
-      # pin states unknown if off() failed
-      raise GraphQLError(f"Unable to turn off zones!")
+      logging.debug(f"Attempting to initiate turn off sequence for all zones")
+      # Shut off Master Valves instantly
+      if 15 in self.zone_pin_map:
+         self.zone_pin_map[15].off()
+      if 16 in self.zone_pin_map:
+         self.zone_pin_map[16].off()
+      
+      # Cancel any pending turn-ons
+      self.pending_zone_on_time = None
+      self.pending_zone_to_on = None
+      self.pending_master_valve_on_time = None
+      self.pending_master_valve_to_on = None
+      
+      # Determine which zones need to be turned off
+      zones_to_turn_off = []
+      for z in range(1, 15):
+          if z in self.zone_pin_map and self.zone_pin_map[z].is_active:
+              zones_to_turn_off.append(z)
+              
+      if zones_to_turn_off:
+          self.pending_zones_to_off = zones_to_turn_off
+          self.pending_zone_off_time = time.time() + 4.0
+          logging.debug(f"Scheduled zones {zones_to_turn_off} to turn off in 4.0s")
+      else:
+          # if no zones are active, we can clear the pending list immediately
+          for z in range(1, 15):
+              if z in self.zone_pin_map:
+                  self.zone_pin_map[z].off()
+          self.pending_zone_off_time = None
+          self.pending_zones_to_off = []
+
+      # success
+      self.running_zone = None
+      self.running_zone_requested_on_mins = None
+      self.running_zone_start_time = None
+      self.running_zone_end_time = None
+      return
 
    def handleZoneRunInstruction(self, instruction):
       if (isinstance(instruction.zone, int)
-            and instruction.zone in ZONE_TO_PIN_MAP.keys()
+            and instruction.zone in ZONE_TO_MASTER_VALVE_MAP.keys()
             and isinstance(instruction.durationMins, int)
             and instruction.durationMins > 0
             and instruction.durationMins <= MAX_ZONE_RUNTIME_MINS):
 
+         # Check if any zone is currently running
+         any_running = False
+         for z in range(1, 15):
+             if z in self.zone_pin_map and self.zone_pin_map[z].is_active:
+                 any_running = True
+                 break
+
          self.handleResetInstruction()
-         self.zone_pin_map[instruction.zone].on()
-         logging.debug(f"Turning on zone {instruction.zone} at pin {self.zone_pin_map[instruction.zone]}")
+         
+         master_valve = ZONE_TO_MASTER_VALVE_MAP[instruction.zone]
+         
+         delay_before_on = 0
+         if any_running:
+            delay_before_on = 4.5 # Wait for the reset instruction's 4 second delay to finish
+            
+         self.pending_zone_to_on = instruction.zone
+         self.pending_zone_on_time = time.time() + delay_before_on
+         
+         self.pending_master_valve_to_on = master_valve
+         self.pending_master_valve_on_time = time.time() + delay_before_on + 2.5
+
+         logging.debug(f"Scheduling zone {instruction.zone} to turn on in {delay_before_on}s, and MV {master_valve} in {delay_before_on + 2.5}s")
          self.running_zone = instruction.zone
          self.running_zone_requested_on_mins = instruction.durationMins
-         self.running_zone_start_time = int(time.time())
+         self.running_zone_start_time = int(time.time() + delay_before_on)
          self.running_zone_end_time = self.running_zone_start_time + (instruction.durationMins * 60)
          logging.info(f"Running zone {instruction.zone} for {instruction.durationMins}")
          return
