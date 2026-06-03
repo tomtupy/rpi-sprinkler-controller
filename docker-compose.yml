@@ -12,3 +12,16 @@ services:
       - NEW_RELIC_ENVIRONMENT=production
       - NEW_RELIC_CONFIG_FILE=newrelic.ini
     command: ["newrelic-admin", "run-program", "python3", "sprinkler.py"]
+
+  ui:
+    build: 
+      context: ../sprinkler-ui
+      args:
+        # We pass the Pi's IP here so Vite knows where to send API requests when running on the phone
+        VITE_API_URL: http://192.168.0.62:8080/graphql
+    container_name: rpi-sprinkler-ui
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - sprinkler
