@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  sprinkler:
+    build: .
+    container_name: rpi-sprinkler
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    privileged: true # Required for GPIO access on Raspberry Pi
+    environment:
+      - NEW_RELIC_ENVIRONMENT=production
+      - NEW_RELIC_CONFIG_FILE=newrelic.ini
+    command: ["newrelic-admin", "run-program", "python3", "sprinkler.py"]
