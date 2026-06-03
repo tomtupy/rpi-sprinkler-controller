@@ -335,6 +335,8 @@ schema = make_executable_schema(type_defs, [query, mutation])
 
 # initialize flask app
 app = Flask(__name__)
+from flask_cors import CORS
+CORS(app)
 explorer_html = ExplorerGraphiQL().html(None)
 
 # Create a GraphQL Playground UI for the GraphQL schema
