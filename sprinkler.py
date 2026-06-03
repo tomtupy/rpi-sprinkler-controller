@@ -290,44 +290,41 @@ type_defs = load_schema_from_path("schema.graphql")
 query = QueryType()
 mutation = MutationType()
 
+WEB_REQUEST_LOCK = Lock()
+
+def processInstruction(instruction):
+   with WEB_REQUEST_LOCK:
+      # Clear any stale items
+      LOOP_THREAD_INSTRUCTION_QUEUE.queue.clear()
+      LOOP_THEAD_RESPONSE_QUEUE.queue.clear()
+      
+      LOOP_THREAD_INSTRUCTION_QUEUE.put(instruction)
+      
+      response = LOOP_THEAD_RESPONSE_QUEUE.get(True, 10)
+      if (isinstance(response, Exception)):
+         raise response
+      return response
+
 # resolvers
 @query.field("getStatus")
 def getStatus(*_):
-   with LOOP_INSTRUCTON_PROCESSING_LOCK:
-      LOOP_THREAD_INSTRUCTION_QUEUE.put(GpioLoopInstruction(GpioLoopInstructions.GET_STATUS))
-   return processResponse()
+   return processInstruction(GpioLoopInstruction(GpioLoopInstructions.GET_STATUS))
 
 @mutation.field("reset")
 def reset(_, info):
-   with LOOP_INSTRUCTON_PROCESSING_LOCK:
-      LOOP_THREAD_INSTRUCTION_QUEUE.put(GpioLoopInstruction(GpioLoopInstructions.RESET))
-   return processResponse()
+   return processInstruction(GpioLoopInstruction(GpioLoopInstructions.RESET))
 
 @mutation.field("enable")
-def reset(_, info):
-   with LOOP_INSTRUCTON_PROCESSING_LOCK:
-      LOOP_THREAD_INSTRUCTION_QUEUE.put(GpioLoopInstruction(GpioLoopInstructions.ENABLE))
-   return processResponse()
+def enable(_, info):
+   return processInstruction(GpioLoopInstruction(GpioLoopInstructions.ENABLE))
 
 @mutation.field("disable")
-def reset(_, info):
-   with LOOP_INSTRUCTON_PROCESSING_LOCK:
-      LOOP_THREAD_INSTRUCTION_QUEUE.put(GpioLoopInstruction(GpioLoopInstructions.DISABLE))
-   return processResponse()
+def disable(_, info):
+   return processInstruction(GpioLoopInstruction(GpioLoopInstructions.DISABLE))
 
 @mutation.field("runZone")
 def runZone(_, info, zone, durationMins):
-   with LOOP_INSTRUCTON_PROCESSING_LOCK:
-      LOOP_THREAD_INSTRUCTION_QUEUE.put(GpioLoopInstruction(GpioLoopInstructions.RUN_ZONE, zone, durationMins))
-   return processResponse()
-
-def processResponse():
-   response = LOOP_THEAD_RESPONSE_QUEUE.get(True, 10)
-   LOOP_THEAD_RESPONSE_QUEUE.task_done()
-   LOOP_THEAD_RESPONSE_QUEUE.queue.clear() # just in case
-   if (isinstance(response, Exception)):
-      raise response
-   return response
+   return processInstruction(GpioLoopInstruction(GpioLoopInstructions.RUN_ZONE, zone, durationMins))
 
 
 # Create executable schema
